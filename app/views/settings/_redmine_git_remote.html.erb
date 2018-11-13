@@ -1,0 +1,14 @@
+<p>
+<%= content_tag(:label, l(:label_clones_root_directory)) %>
+<%= text_field_tag 'settings[clones_root_directory]', @settings['clones_root_directory'], :size => 256 %>
+<em class="info">
+<%= l(:text_clones_root_directory) %>
+</em>
+</p>
+<p>
+<%= content_tag(:label, l(:label_keys_root_directory)) %>
+<%= text_field_tag 'settings[keys_root_directory]', @settings['keys_root_directory'], :size => 256 %>
+<em class="info">
+<%= l(:text_keys_root_directory) %>
+</em>
+</p>
