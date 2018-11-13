@@ -14,7 +14,7 @@ module RedmineGitRemote
           form.text_area(:ssh_private_key, :required => false, :disabled => false, name: 'repository[extra_info][ssh_private_key]') +
           content_tag('em', l(:text_ssh_private_key), :class => 'info') +
           form.text_area(:ssh_public_key, :required => false, :disabled => false, name: 'repository[extra_info][ssh_public_key]') +
-          content_tag('em', l(:text_ssh_public_key), :class => 'info') +
+          content_tag('em', l(:text_ssh_public_key), :class => 'info')
         )
       end
     end

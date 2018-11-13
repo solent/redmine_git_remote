@@ -7,10 +7,9 @@ require_dependency 'redmine_git_remote/poor_mans_capture3'
 class Repository::GitRemote < Repository::Git
 
   PLUGIN_ROOT = Pathname.new(__FILE__).join("../../../..").realpath.to_s
-  PATH_PREFIX = PLUGIN_ROOT + "/repos/"
-  KEYS_PREFIX = PLUGIN_ROOT + "/keys/"
-  SSH_COMMAND_BASE = 
-
+  PATH_PREFIX = Setting.plugin_redmine_git_remote["clones_root_directory"] + "/"
+  KEYS_PREFIX = Setting.plugin_redmine_git_remote["keys_root_directory"] + "/"
+  
   before_validation :initialize_clone
 
   safe_attributes 'extra_info', :if => lambda {|repository, _user| repository.new_record?}
@@ -52,19 +51,41 @@ class Repository::GitRemote < Repository::Git
   end
 
   def ssh_key_dir
-    return KEYS_PREFIX + self.identifier
+    return "#{KEYS_PREFIX}/#{self.clone_host}"
   end
 
   def ssh_private_key_path
-    return "#{self.ssh_key_dir}/id_#{self.ssh_key_type}"
+    return "#{self.ssh_key_dir}/#{self.identifier}.key"
+  end
+
+  def ensure_ssh_private_key_exists
+    return if File.file?( self.ssh_private_key_path )
+
+    begin
+      FileUtils.mkdir_p self.ssh_key_dir
+    rescue Exception => e
+      raise "Failed to create directory #{self.ssh_key_dir}: " + e.to_s
+    end
+    begin
+      File.open( ssh_private_key_path, "w") { |file| file.write( self.ssh_private_key ) }
+    rescue Exception => e
+      raise "Failed to write SSH private key to #{self.ssh_private_key_path}: " + e.to_s
+    end
+    begin
+      # Mandatory if we want SSH to use that private key (else SSH fails with permissions warning on stderr)
+      system "chmod", "600", self.ssh_private_key_path
+    rescue Exception => e
+      raise "Failed to setup permissions on '#{self.ssh_private_key_path}': " + e.to_s
+    end
   end
 
   def git_ssh_command
+    self.ensure_ssh_private_key_exists
     return "ssh -F /dev/null -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -i #{self.ssh_private_key_path}"
   end
 
   def git_env
-    return "GIT_SSH_COMMAND='#{self.git_ssh_command}'"
+    return { "GIT_SSH_COMMAND" => "#{self.git_ssh_command}" }
   end
 
   def clone_protocol_ssh?
@@ -113,19 +134,6 @@ class Repository::GitRemote < Repository::Git
 
     err = ensure_possibly_empty_clone_exists
     errors.add :extra_clone_url, err if err
-
-
-
-    if ! err
-      begin
-        FileUtils.mkdir_p self.ssh_key_dir
-      rescue Exception => e
-        raise "Unable to create directory #{self.ssh_key_dir}: " + e.to_s
-      end
-      unless system "ssh-keygen", "-b", "2048", "-t", self.ssh_key_type, "-q", "-N", "\"\"", "-f", self.ssh_private_key_path
-        raise "Unable to generate SSH keys in #{self.ssh_key_dir}."
-      end
-    end
   end
 
   # equality check ignoring trailing whitespace and slashes
@@ -133,26 +141,31 @@ class Repository::GitRemote < Repository::Git
     a.chomp.gsub(/\/$/,'') == b.chomp.gsub(/\/$/,'')
   end
 
+  def execute_git_command(*args)
+    return system self.git_env, args.unshift( "git" )
+  end
+
   def ensure_possibly_empty_clone_exists
     Repository::GitRemote.add_known_host(clone_host) if clone_protocol_ssh?
 
-    unless system self.git_env, "git", "ls-remote",  "-h",  clone_url
-      return "#{clone_url} is not a valid remote."
-    end
+    output, status = RedmineGitRemote::PoorMansCapture3::capture2(self.git_env, "git", "ls-remote",  "-h",  clone_url)
+    logger.info "git ls-remote output: '#{output}'."
+    logger.info "git ls-remote status: '#{status}'."
+    return "#{clone_url} is not a valid remote or SSH public key is not allowed to access it." unless status.success?
 
     if Dir.exists? clone_path
-      existing_repo_remote, status = RedmineGitRemote::PoorMansCapture3::capture2("GIT_SSH_COMMAND='" + self.git_ssh_command + "'", "git", "--git-dir", clone_path, "config", "--get", "remote.origin.url")
+      existing_repo_remote, status = RedmineGitRemote::PoorMansCapture3::capture2(self.git_env, "git", "--git-dir", clone_path, "config", "--get", "remote.origin.url")
       return "Unable to run: git --git-dir #{clone_path} config --get remote.origin.url" unless status.success?
 
       unless two_remotes_equal(existing_repo_remote, clone_url)
-        return "Directory '#{clone_path}' already exits, unmatching clone url: #{existing_repo_remote}"
+        return "Directory '#{clone_path}' already exists, but with a different remote url: #{existing_repo_remote}."
       end
     else
-      unless system self.git_env, "git", "init", "--bare", clone_path
+      unless execute_git_command "init", "--bare", clone_path
         return  "Unable to run: git init --bare #{clone_path}"
       end
 
-      unless system self.git_env, "git", "--git-dir", clone_path, "remote", "add", "--mirror=fetch", "origin",  clone_url
+      unless execute_git_command "--git-dir", clone_path, "remote", "add", "--mirror=fetch", "origin",  clone_url
         return  "Unable to run: git --git-dir #{clone_path} remote add --mirror=fetch origin #{clone_url}"
       end
     end
@@ -192,13 +205,13 @@ class Repository::GitRemote < Repository::Git
     Rails.logger.warn err if err
 
     # If dir exists and non-empty, should be safe to 'git fetch'
-    unless system self.git_env, "git", "--git-dir", clone_path, "fetch", "--all"
+    unless execute_git_command "--git-dir", clone_path, "fetch", "--all"
       Rails.logger.warn "Unable to run 'git -c #{clone_path} fetch --all'"
     end
   end
 
-  # Checks if host is in ~/.ssh/known_hosts, adds it if not present
   def self.add_known_host(host)
+    
     # if not found...
     #out, status = RedmineGitRemote::PoorMansCapture3::capture2("ssh-keygen", "-F", host)
     #raise "Unable to run 'ssh-keygen -F #{host}" unless status
@@ -216,6 +229,6 @@ class Repository::GitRemote < Repository::Git
     #  out, status = RedmineGitRemote::PoorMansCapture3::capture2("ssh-keyscan", host)
     #  raise "Unable to run 'ssh-keyscan #{host}'" unless status
     #  Kernel::open(ssh_known_hosts, 'a') { |f| f.puts out}
-    end
+    #end
   end
 end

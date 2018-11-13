@@ -4,7 +4,7 @@
 module RedmineGitRemote
   module PoorMansCapture3
 
-    def self.capture3(*cmd)
+    def self.capture3(env,*cmd)
       # Force no shell expansion, by using a non-plain string. See ruby docs:
       #
       # `If the first argument is a two-element array, the first element is the
@@ -20,7 +20,7 @@ module RedmineGitRemote
         rout.close
         STDERR.reopen(werr)
         STDOUT.reopen(wout)
-        exec(*cmd)
+        exec(env,*cmd)
       end
 
       wout.close
@@ -34,14 +34,14 @@ module RedmineGitRemote
       return [out, err, $?]
     end
 
-    def self.capture2(*cmd)
-      out, err, stat = capture3(*cmd)
+    def self.capture2(env,*cmd)
+      out, err, stat = capture3(env,*cmd)
       STDERR.write err
       return out, stat
     end
 
     def self.test(*cmd)
-      st, err, out = capture3(*cmd)
+      st, err, out = capture3({},*cmd)
       p st
       p err
       p out
