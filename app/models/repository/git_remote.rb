@@ -59,18 +59,19 @@ class Repository::GitRemote < Repository::Git
   end
 
   def ensure_ssh_private_key_exists
-    return if File.file?( self.ssh_private_key_path )
+    unless File.file?( self.ssh_private_key_path )
+      begin
+        FileUtils.mkdir_p self.ssh_key_dir
+      rescue Exception => e
+        raise "Failed to create directory #{self.ssh_key_dir}: " + e.to_s
+      end
+      begin
+        File.open( ssh_private_key_path, "w") { |file| file.write( self.ssh_private_key ) }
+      rescue Exception => e
+        raise "Failed to write SSH private key to #{self.ssh_private_key_path}: " + e.to_s
+      end
+    end
 
-    begin
-      FileUtils.mkdir_p self.ssh_key_dir
-    rescue Exception => e
-      raise "Failed to create directory #{self.ssh_key_dir}: " + e.to_s
-    end
-    begin
-      File.open( ssh_private_key_path, "w") { |file| file.write( self.ssh_private_key ) }
-    rescue Exception => e
-      raise "Failed to write SSH private key to #{self.ssh_private_key_path}: " + e.to_s
-    end
     begin
       # Mandatory if we want SSH to use that private key (else SSH fails with permissions warning on stderr)
       system "chmod", "600", self.ssh_private_key_path
@@ -85,7 +86,11 @@ class Repository::GitRemote < Repository::Git
   end
 
   def git_env
-    return { "GIT_SSH_COMMAND" => "#{self.git_ssh_command}" }
+    if clone_protocol_ssh?
+      return { "GIT_SSH_COMMAND" => "#{self.git_ssh_command}" }
+    else
+      return {}
+    end
   end
 
   def clone_protocol_ssh?
@@ -142,19 +147,27 @@ class Repository::GitRemote < Repository::Git
   end
 
   def execute_git_command(*args)
-    return system self.git_env, args.unshift( "git" )
+    git_command = args.unshift( "git" )
+    #logger.info "Git env: #{self.git_env.to_s}"
+    #logger.info "Git command: #{git_command.join(' ')}"
+    return system self.git_env, *git_command
+  end
+
+  def capture_git_command(*args)
+    git_command = args.unshift( "git" )
+    return RedmineGitRemote::PoorMansCapture3::capture2(self.git_env, *git_command)
   end
 
   def ensure_possibly_empty_clone_exists
     Repository::GitRemote.add_known_host(clone_host) if clone_protocol_ssh?
 
-    output, status = RedmineGitRemote::PoorMansCapture3::capture2(self.git_env, "git", "ls-remote",  "-h",  clone_url)
-    logger.info "git ls-remote output: '#{output}'."
-    logger.info "git ls-remote status: '#{status}'."
+    output, status = capture_git_command("ls-remote",  "-h",  clone_url)
+    #logger.info "git ls-remote output: '#{output}'."
+    #logger.info "git ls-remote status: '#{status}'."
     return "#{clone_url} is not a valid remote or SSH public key is not allowed to access it." unless status.success?
 
     if Dir.exists? clone_path
-      existing_repo_remote, status = RedmineGitRemote::PoorMansCapture3::capture2(self.git_env, "git", "--git-dir", clone_path, "config", "--get", "remote.origin.url")
+      existing_repo_remote, status = capture_git_command("--git-dir", clone_path, "config", "--get", "remote.origin.url")
       return "Unable to run: git --git-dir #{clone_path} config --get remote.origin.url" unless status.success?
 
       unless two_remotes_equal(existing_repo_remote, clone_url)
